@@ -1,0 +1,186 @@
+---
+title: "Estudio inferencial-`cars2020`(Regresión lineal)"
+author: "Jorge Cardete Llamas"
+date: "6/12/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+df <- read.csv("cars2020.csv")
+
+```
+
+En primer lugar es importante verificar los supuestos. Ya hemos comprobado todos estos supuestos con el conjunto de datos con todas las variables. Pero los volveré a comprobar para realizar la regresión lineal ya que en este caso es muy importante que se cumplan para interpretar los resultados.
+
+### Supuesto de Relación lineal
+
+Este supuesto no hace falta que lo volvamos a comprobar ya que las variables que hemos incluido en este conjunto de datos tienen una relación lineal con la dependiente (en algunas variables está relación es leve).
+
+### Supuesto de multicolinealidad 
+
+Para comprobar este supuesto calcularé una matriz de correlación y buscaré cuantos valores hay por encima de 0.80. Sólamaente hay dos, comprobaré que variables tienen esta correlación. 
+
+```{r message=FALSE, warning=FALSE}
+apply(data.frame(df %>% cor(method="pearson") %>% round(digits=2)),2, function(x) for(line in x) if(line > 0.80 && line < 1) print(line))
+```
+
+```{r message=FALSE, warning=FALSE}
+library(corrplot)
+corrplot(df %>% cor(method="pearson") %>% round(digits=2), type="upper", order="hclust", tl.col="black", tl.srt=45)
+```
+En la matriz de correlación se puede que ver la correlación del 0.81 se da entre la variable **price** y **engineSize**. Por lo tanto no existe multicolinealidad entre las variables dependeintes. 
+
+### Supuesto de independencia 
+
+Para valorar el suspuesto de independencia de los residuos, utilizaré el test de durbin-watson: 
+
+$$H_0$$ = No hay correlación entre los datos. 
+
+$$H_A$$ = Hay correlación entre lso datos. 
+
+Si el resultado del test está entre 1.5 y 2.5 puede concluir que no existe dependencia en los residuos.  
+
+
+```{r message=FALSE, warning=FALSE}
+library(lmtest)
+
+dwtest(lm(price~., df))
+```
+
+EL resultado del test es 1.6559 y el p-valor es 0.760. Por lo que podemos asumir que no existe relación entre los residuos y lo podemos corroborar estadísitcamente con el p-valor ya que no tenemos evidencia suficiente para rechazar la hipótesis nula. 
+
+
+### Supuesto de homocedasticidad
+
+Este supuesto ya lo comprobé con el conjunto de datos general pero lo volveré a comprobar ya que ahora tenemos menos variables en el modelo y las hemos modificados eliminando los datos nulos y los atípicos según la distancia de cook. 
+
+Volveré a crear el gráfico de **los valores ajustados de la regresión vs los residuos**. 
+
+```{r message=FALSE, warning=FALSE}
+par(mfrow = c(1,2))
+plot(lm(price~., df),1)
+plot(lm(price~., df),3)
+```
+En el primer gráfico los residuos parecen estar más o menos distribuidos de una forma homogenea. Aun así se aprecia que tienen a estar más por encima de la línea central y a medida que se mueven a la derecha en el eje x la distribución de los residuos parece incrementar. En cuanto al segundo gráfico se puede apreciar que la línea roja no es homogenea y va incrementando su pendiente a medida que se desplaza a la derecha del eje x. En cuanto a los residuos, se puede ver un patrón en ellos ya que también incrementan a medida que se desplazan a la derecha del eje x. 
+
+En principio estos gráficos nos muestran la presencia de heterocedasticidad. Aun así comprobaré este supuesto de una forma estadística a través del test de Breusch-Pagan: 
+
+H_0 = Los residuos se distribuyen de manera homogénea.
+
+H_A = Los residuos siguen una distribución de heterocedasticidad.
+
+```{r message=FALSE, warning=FALSE}
+bptest(lm(price~.,df))
+```
+El p-valor es claramente menor que 0.05 por lo que rechazamos la hipotesis nula y asusmimos que existe heterocedasticidad en el modelo.
+
+### Supuesto de normalidad
+
+Volveré a crear un gráfico qq-plot, En caso de dudas utilizaré el test de kolmogorov. Aun asi es importante tener en cuenta que este tipo de pruebas son sensibles a muestras grandes, por lo que en principio no lo utilizaré. 
+
+```{r message=FALSE, warning=FALSE}
+plot(lm(price~., df),2)
+
+```
+Queda bastante claro que el modelo no sigue una distribución normal. 
+
+### Transformación en el conjunto de datos
+
+Dado que el conjunto de datos no cumple los supuestos de homogeneidad y normalidad no podemos fiarnos de los resultados del modelo de regresión. Para mejorar el modelo con respecto a estos supuestos, podmeos transformar el conjunto de datos. Por lo general, tanto en el supuesto de homogeneidad como en el de normalidad se puede observar como los residuos con mayores valores en el eje x están más dispersos que los demás. 
+
+Para corregir este comportamiento aplicaré una tranformación a través de la raíz cuadrada. 
+
+
+```{r message=FALSE, warning=FALSE}
+prueba4 <- df %>% 
+  mutate("price" = sqrt(abs(df$price)))
+
+par(mfrow = c(2,2))
+plot(lm(price~., prueba4))
+
+```
+Después de la transformación los datos parecen aproximarse más a una distribución normal. El grado de heterodasticidad también parece haber disminuido. Aun así este supuesto sigue sin cumplirle y los resiudos del modelo siguen sin tener una distribucíon homogénea. Ahora se viola una de los supuestos más importantes, el de linealidad. Esto lo podemos comprobar en el primer gráfico donde la línea roja no sigue claramente la línea del eje central discontinua. 
+
+También es posible aplicar una transformación logaritmica. De esta manera conseguiremos que los valores más pequeños estén más dispersos y que los más grandes estén más juntos. Esta transformación sólo se puede aplicar a valores por encima de 0 por lo que antes de aplicarla sumaré a todos los números el precio mínimo más una unidad. 
+
+```{r message=FALSE, warning=FALSE}
+prueba3 <- df %>% 
+  mutate("price" = log(0.1 + df$price + min(df$price)*-1))
+
+par(mfrow = c(2,2))
+plot(lm(price~., prueba3))
+
+```
+La transformación logarítmica de la independiente no parece incluir ninguna mejora en el modelo. 
+
+Otro método más potente es el de la transformación inversa pero en este caso no lo aplicaré. También se podría intentar transformar las variables dependientes pero eso ya sería un estudio más detallado. 
+
+Otro método al que se puede recurrir para mejorar el conjunto de datos es el de la regresión ponderada. Se trata de una regresión lineal en la que se utilizará la convarianza de los errores para encontrar los coeficientes de regresión. Tiene sentido utilizar está técnica porque no asume que todos los residuos tienen la misma varianza, sino que asigna un peso diferente a cada residuo en función de su varianza. De está manera tendremos un resultado más fiable. 
+```{r message=FALSE, warning=FALSE}
+mod <- lm(price~.,df)
+
+
+wt <- 1 / lm(abs(mod$residuals) ~ mod$fitted.values)$fitted.values^2
+
+wls_model <- lm(price~., data = df, weights=wt)
+
+par(mfrow = c(2,2))
+plot(wls_model,1)
+plot(lm(price~., df),1)
+plot(wls_model,2)
+plot(lm(price~., df),2)
+
+```
+Claramente a mejorado notablemente el modelo tanto en términos de homogeneidad como de normaldiad. Con el modelo de regresión lineal ponderada, los datos se distribuyen por el eje x de una forma mucho más homogénea. Aun siguen existiendo heterocedasticidad, principalmente por la existencia de algunos outliers pero la muestra es mucho más homogenea. Por otro lado la normlidad del modelo ha mejorado mucho. Ahora si que podemos afirmar que el conjunto de datos está aproximadaemente normalizado. Sigue existiendo un sesgo en la cola derecha aun así. 
+
+A continuación volveré a aplicar el método de cook para eliminar la existencia de outliers en este nuevo modelo. 
+
+
+```{r message=FALSE, warning=FALSE}
+mod <- lm(price ~. , data=df)
+cooksd <- cooks.distance(mod)
+
+n <- nrow(cars)
+plot(cooksd, main = "Distancia de Cook para datos influyentes en el modelo")
+abline(h = 4/n, lty =  2, col = "yellow")
+
+influential <- cooksd[(cooksd > (4 * mean(cooksd, na.rm = TRUE)))]
+
+names_of_influential <- names(influential)
+
+outliers <- df[names_of_influential,]
+cook <- df %>% anti_join(outliers)
+
+mod <- lm(price~.,cook)
+
+
+wt <- 1 / lm(abs(mod$residuals) ~ mod$fitted.values)$fitted.values^2
+
+wls_model <- lm(price~., data = cook, weights=wt)
+
+par(mfrow = c(2,2))
+plot(wls_model,1)
+plot(lm(price~., df),1)
+plot(wls_model,2)
+plot(lm(price~., df),2)
+
+```
+Si comparamos la homogeneidad del nuevo modelo con el anterior, está mucho más compacta y los datos están distribuidos por el eje x de una manera más homogenea. Por otro lado ya no existen tantos outliers. Ell gráfico sigue teniendo esa forma de cono carácterística de heterogeneidad, aun así podemos afirmar que hemos reducido notablemente la heterogeneidad. En cuanto a la normalidad, también ha habido una clara mejora. El gráfico sigue sin seguir una distribución normal
+
+
+Una vez tenemos estos resultados podemos empezar a crear el modelo de regresión lineal. Utiilzaré el método de direct stepwise para sacar el modelo de regresión lineal.
+
+```{r message=FALSE, warning=FALSE}
+intercept_only <- lm(price ~ 1, cook)
+
+all <- lm(price ~ ., cook)
+
+both <- step(intercept_only, direction='both', scope=formula(all), trace=0)
+
+both$coefficients
+
+```
+Este será el modelo final de regresión que utilizaré. 
