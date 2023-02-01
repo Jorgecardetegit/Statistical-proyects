@@ -1,0 +1,826 @@
+---
+title: "Trabajo Minería 1"
+author: "Jorge Cardete Llamas"
+date: "10/11/2022"
+output:
+  pdf_document: 
+    latex_engine : xelatex
+  mainfont : NanumGothic
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Resumen 
+La industria de la automoción es un sector estratégico en Reino Unido. Se trata del cuarto país que más coches fabrica anualmente sgún la información que nos proporciona La Sociedad de Fabricantes y Comerciantes de Automoviles (SMMT) que registra las ventas de Inglaterra en el sector automovilístico. 
+
+
+Una vez hecha la investigación haremos un análisis para corroborar nuestra hipotesis y ver si podemos encontrar alguna relación que no podemos visualizar de antemano. 
+
+El conjunto de datos se compone de las siguientes variables: "price", "brand", "model", "year", "transmission", "mileage", "fuelType", "tax", "mpg", "engineSize".
+ 
+Price es la variable dependiente y todas las demás son predictoras. Para tener una idea más global del conjunto de datos haré un resumen del mismo en el que podremos ver por encima las características de cada variable. Dividiré el resumen en variables númericas, categóricas y contínuas. 
+
+
+```{r echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr)
+library(tools)
+library(ggplot2)
+library(ggpubr)
+library(colorspace)
+library(RColorBrewer)
+library(nortest)
+library(random)
+library(rstatix)
+library(minerva)
+library(VIM)
+library(moments)
+library(outliers)
+library(car)
+library(fastDummies)
+library(caret)
+
+
+cars <- read.csv("used_cars2020.csv") 
+
+mat = matrix(ncol = 0, nrow = 7)
+summary_cars=data.frame(mat)
+
+for(line in names(cars)) if (is.character(cars[[line]])){
+lista3 <- aggregate(cars[[line]], by = list(cars[[line]]), FUN = length)
+lista3 <- lista3 %>% arrange(desc(x)) 
+lista3 <- lista3[0:7,]
+
+lista3[[line]] <- paste(as.character(lista3$Group.1),":", as.character(lista3$x))
+
+summary_cars[[line]] <- lista3[[line]]
+rm(lista3)}
+
+summary_cars[summary_cars == "NA : NA"] <- ""
+names(summary_cars) <- toTitleCase(names(summary_cars))
+
+Summary <- c("Class: Character", "Mode: Character")
+Summary <- c(Summary, rep("", nrow(summary_cars)-length(Summary)))
+
+summary_cars <- cbind(Summary,summary_cars)
+kable(summary_cars, caption = "Categóricas")
+
+
+contador = 0 
+
+for(line in names(cars)) if(length(summary(cars[[line]])) > contador) contador <- length(summary(cars[[line]]))
+df <- as.data.frame(matrix(ncol = 0, nrow = contador))
+
+
+for(line in names(cars)) if(is.numeric(cars[[line]]) & length(unique(cars[[line]]))>1){
+    
+line2<- as.data.frame(matrix(summary(cars[[line]])))
+if (nrow(line2)<7) {line2 <- rbind(line2,NA)
+     x <- names(summary(cars$tax))}
+line2$V1 <- round(line2$V1,0)
+line2[[line]] <- paste(x,":   ",as.character(line2$V1))
+
+df[[line]] <- line2[[line]] 
+rm(line2)}
+
+names(df) <- toTitleCase(names(df))
+
+Summary <- c("Class: Numeric", "Mode: Numeric")
+Summary <- c(Summary, rep("", nrow(df)-length(Summary)))
+
+df <- cbind(Summary,df)
+
+kable(df, caption = "Contínuas")
+
+Year <- as.data.frame(matrix(summary(cars$year)))
+
+df <- data.frame("Summary" = c("Type: Constant", "Class: Numeric"), Year = c(paste(as.character(2020), ":", as.character(length(cars$year))),""))
+
+kable(df,caption = "Constantes")
+```
+
+Con este resumen se puede hacer una idea del conjunto de datos y las características de cada variable. En la tabla de las categóricas se pueden ver los diferentes grupos dentro de cada variable. Cabe destacar que en la variable **model** hay un total de 115 modelos por lo que no se pueden incluir todos en el resumen.
+Será una variable compleja con la que trabajar debido a su gran número de valores. Por lo demás todo parece estar en orden. 
+Por otro lado, la variable **tax**, es númerica pero discreta por lo que la incluiré en el grupo de las categóricas. 
+
+En cuanto a la tabla de contínuas se puede ver un resumen estadístico de cada una de ellas y la existencia de valores de nulos en las mismas. El problema es que las variables se han medido en unidades diferentes y esto dificulta su análisis en algunos ámbitos. Por ello estandarizaré las variables continuas para poder compararlas sin tener cuenta su unidad de medida. 
+
+La variable constante proporciona la información de que el conjunto de datos recoge información del año 2020. Pero esto no va a aportar ningún tipo de información que sea útil para el estudio ya que es una constante por lo que no la incluiré en el estudio estadístico. 
+
+Para trabajar mejor con los datos, craeré dos grupos, un conjunto en el que se incluyan las variables categóricas y otro en el que se incluyan las contínuas. 
+Convertiré todas las variables categóricas en factores para trabajar mejor con ellas en R. 
+
+```{r warning=FALSE}
+cars$brand <- as.factor(cars$brand)
+cars$model <- as.factor(cars$model)
+cars$transmission <- as.factor(cars$transmission) 
+cars$fuelType <- as.factor(cars$fuelType)
+cars$tax <- as.factor(cars$tax)
+
+continuas <- select(cars,-is.factor)
+
+categoricas <- select(cars,is.factor)
+```
+Antes de aplicar cualquier tipo de transformación o cualquier medida en los datos es importante que se cumplan una serie de supuestos. 
+
+ - Independencia 
+
+ - Normalidad
+
+ - Homocedasticidad
+
+Además de cumplir todos estos supuestos es importante tratar los datos nulos y los datos atípicos para realizar el análisis de la manera más eficiente posible. 
+
+Empezaré modificando los valores nulos e identificando los "outliers".
+
+## Valores nulos 
+
+Se pueden seguir varios métodos para trabajar con los valores nulos. En este caso como el objetivo es construir el mejor modelo posible, llevaré a cabo el método de k-vecinos para la imputación de valores nulos. Este método se ajusta mejor que sustituir un valor fijo como puede ser la media o la mediana en cada valor nulo y permite realizar un análisis más potente. 
+
+Por otro lado el método de eliminar las filas con valores nulos reducirá el número de observaciones y puede afectar a la predicción del modelo. 
+
+Es importante aplicar este método en predictores que realmente tienen una relación con la dependiente ya que por el contrario se estaría malgastando potencia de computación en utilizar este método en variables que después no se van a incluir en el modelo final. 
+
+En primer lugar, si los valores nulos superan un 5% del número de observaciones en el conjunto de datos, se sustituirán por una medida de tendencia central. En caso contrario se eliminarán las filas con valores nulos ya que no representan una cantidad significativa que pueda afectar al análisis. 
+
+Para decidir la medida central por la que se imputarán los valores nulos, un buen indicador es el sesgo de la variable en la que se van a sustituir los datos. Si presenta un sesgo alto, la media no será un buen indicador ya que es sensible a los "outliers", por lo que se imputará por la mediana. En caso contrario se sustituirá por la media.
+
+Una vez que haya contruido el modelo y se haya decidido que variables son significativas se volverá a incluir los valores nulos en el conjunto de datos y se imputarán a través del algoritmo k-vecinos. 
+Por lo general este modelo suele ajustarse mejor a los datos pero en algunos casos se ajusta demasiado bien y puede provocar overfitting por lo que hay que tener cuidado con la potencia que se emplea. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+cars <- cars %>% 
+  select(-year)
+
+cars_null <- sapply(cars, function(x) sum(is.na(x)))
+kable(data.frame("Variables" = paste(names(cars_null),": ", cars_null)),caption = "Valores Nulos")
+```
+Solamente existen valores nulos en las variables **tax** y **mpg** y suman un total de 543 datos, que representa un 11.66% del conjunto de datos por lo que es lo suficientemente significativo como para no eliminar las columnas. Comprobaré el sesgo que presenta estas variables para valorar si susituyo los NAs por la media o la mediana.
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+
+#Gráficos ----------------------------------------------------------------------------------------------
+mpg_bp <- ggplot(cars, aes(x = mpg))+geom_histogram(aes(y = ..density..), col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6") +
+  geom_text(x = 210, y = 0.05, label = "Sesgo = 5.39 \n Curtosis = 49.48",size = 3.5)
+
+tax_bp <- ggplot(cars, aes(x=tax, fill=tax)) + 
+  geom_bar( ) +
+  guides(fill = guide_legend(title = "Leyenda"))+
+  geom_text(x = 6.5, y = 3000, label = "Sesgo = 13.98 \n Curtosis = 223.50",size = 3.5)
+
+ggarrange(mpg_bp, tax_bp, nrow = 2, ncol = 1)
+
+#Sesgo y Curtosis --------------------------------------------------------------------------------------
+#skewness(as.numeric(as.character(cars$tax)),na.rm = TRUE)
+#kurtosis(as.numeric(as.character(cars$tax)),na.rm = TRUE)
+
+#skewness(cars$mpg, na.rm = TRUE)
+#kurtosis(cars$mpg, na.rm = TRUE)
+```
+Tanto **mpg** como **tax** presentan un sesgo y una curtosis que indican la existencia de una asimetría. Por lo tanto sustituiré la mediana dentro de cada valor nulo. Utilizaré el siguiente codigo para imputar los valores nulos: 
+
+```{r  echo=TRUE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+median_tax <- median(as.numeric(as.character(cars$tax)), na.rm = TRUE)
+median_mpg <- median(cars$mpg, na.rm = TRUE)
+
+cars$tax<- cars$tax %>%
+            replace(is.na(.),median_tax)
+
+cars$mpg<- round(cars$mpg %>%
+            replace(is.na(.),median_mpg), digits = 0)
+
+```
+
+Una vez sustuidos los valores nulos compararé las gráficas antes y después de la imputación para evaluar como ha cambiado la distribución de ambas variables. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+cars_nulos <- read.csv("used_cars2020.csv")
+cars_nulos$tax <- as.factor(cars_nulos$tax)
+
+mpg_bp <- ggplot(cars_nulos, aes(x = mpg))+geom_histogram(aes(y = ..density..), col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6") +
+  geom_text(x = 180, y = 0.05, label = "Sesgo = 5.39 \n Curtosis = 49.48",size = 3.5)+
+  ggtitle("Gráfico con nulos")
+
+mpg_bp2 <- ggplot(cars, aes(x = mpg))+geom_histogram(aes(y = ..density..), col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6") +
+  geom_text(x = 180, y = 0.042, label = "Sesgo = 5.53 \n Curtosis = 51.89",size = 3.5)+
+  theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())+
+  ggtitle("Gráfico sin nulos")
+
+tax_bp <- ggplot(cars_nulos, aes(x=tax, fill=tax)) + 
+  geom_bar( ) +
+  guides(fill = guide_legend(title = "Leyenda"))+
+  geom_text(x = 5.5, y = 3000, label = "Sesgo = 13.98 \n Curtosis = 223.50",size = 3.5)
+
+tax_bp2 <- ggplot(cars, aes(x=tax, fill=tax)) + 
+  geom_bar( ) +
+  guides(fill = guide_legend(title = "Leyenda"))+
+  geom_text(x = 5, y = 3250, label = "Sesgo = 14.53 \n Curtosis = 241.67",size = 3.5)+
+  theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())
+
+ggarrange(mpg_bp,mpg_bp2, tax_bp,tax_bp2, nrow = 2, ncol = 2)
+
+# Sesgo y curtosis -------------------------------------------------------------------------------------
+#skewness(as.numeric(as.character(cars_nulos$tax)),na.rm = TRUE)
+#kurtosis(as.numeric(as.character(cars_nulos$tax)),na.rm = TRUE)
+
+#skewness(cars$mpg, na.rm = TRUE)
+#kurtosis(cars$mpg, na.rm = TRUE)
+
+```
+En general no ha cambiado mucho la distribución de las variables ya que hemos cambaiado, los nulos por la mediana. Este cambio ha provocado que las variables **tax** y **mpg** sigan una distribución más centralizada. El sesgo y la curtosis han aumentado naturalmente ya que hemos incorporado más datos dentro de cada variable y antes estos datos no se estabán teniendo en cuenta para el cálculo del sesgo y la curtosis. Este problema se debe a la existencia de valores atípicos y a la naturaleza del conjunto de datos más tarde veré que hacer con el. 
+
+
+## Valores atípicos
+
+En cuanto a los datos atípicos podemos seguir varias pautas para detectarlos. Uno de los métodos más empleados es el método univariado que consiste en analizar cada variable con un diagrama de caja y bigotes y clasificar como "outliers leves" los valores que se encuentran por encima de 3Q + 1.5 * RIC o por debajo de 1Q- 1.5 * RIC y "outliers extremos" los valores que se encuentran por encima de 3Q + 3 * RIC o por debajo de 1Q - 3 * RIC. 
+
+Aun así hay que tener cuidado con este tipo de análisis ya que un dato atípico no tiene porque ser una observación que se encuentra muy alejada de la media. Sino un punto que se encuentra alejado de la distribución que siguen los demás datos. Por ello el método univariado no siempre tiene porque ser correcto. Podemos ver con más claridad este concepto en la siguiente imagen donde no detectaríamos el primer outlier con el método univariante. 
+
+![](C:/Users/jorge/OneDrive/Imágenes/Documentos/Borrar/outlier-detection-1.png){width: 100px; }
+
+Por lo tanto me voy a basar en dos métodos. El método univariante y el metodo multivariante. La diferencia es que en el multivariante se examina la dependencia de varias variables mientrás que en el univariante la busqueda de outliers se lleva a cabo de manera independiente. 
+
+Para realizar el método multivariante utilizaré la **distancia de Cook**, que define cuanto varían los valores en un modelo de regresión cada vez que se cambia la observación inésima. De está manera es posible ver en que grado dicho punto ha impactado a los valores de la regresión. Si este impacto ha sido muy notable probablemente se trate de un valor atípico. 
+
+Existen métodos que podrían ajustarse mejor al modelo como puede ser el error de Minkwoski, pero como el objetivo es llevar a cabo una regresión lineal y un k vecinos, considero que la distancia de cook se ajusta bastante bien. 
+
+En primer lugar emplearé el método univariante para tener una idea general del número de valores atípicos en el conjunto de datos. Después utilizaré la distancia de Cook para encontrar posibles outliers que no haya detectado con el primer método.
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+# Creación de diagramas de caja y bigote -----------------------------------------------------------------
+library(ggstatsplot)
+
+Conf3x2 = matrix(c(1:4), nrow=2, byrow=TRUE)
+layout(Conf3x2)
+
+
+boxplot(cars$price, xlab = "Price")
+boxplot(cars$mileage, xlab = "Mileage")
+boxplot(cars$engineSize, xlab = "EngineSize")
+boxplot(cars$mpg, xlab = "Mpg")
+
+# Creación de data_frame --------------------------------------------------------------------------------
+outliers <- data.frame("Variables" = c(names(continuas[4,])),
+                       "Outliers_leves" = c(164,54,30,37,sum(164,54,30,37)),
+                       "Outliers_extremos" = c(28,15,49,11,sum(28,15,49,11)),
+                       "Outliers_totales" = c(192,69,79,48,sum(192,69,79,48)))
+outliers
+
+# Cálculo de los outliers --------------------------------------------------------------------------------
+
+#sum(is_outlier(cars$price)) - sum(is_extreme(cars$price))
+#sum(is_outlier(cars$mileage)) - sum(is_extreme(cars$mileage))
+#sum(is_outlier(cars$mpg)) - sum(is_extreme(cars$mpg))
+#sum(is_outlier(cars$engineSize)) - sum(is_extreme(cars$engineSize))
+
+```
+Hay un total de 388 outliers dentro de las variables continuas, incluyendo el precio. La variable en la que más datos atípicos hay es claramente el precio que cuenta con un total de 192, siendo 164 leves y 28 extremos. 
+
+Una vez tenemos una idea de los datos atípicos dentro del conjunto de datos, calcularé mediante la **distancia de cook** cuales son los más representativos y eliminaré solamente los valores extremos. Para ello crearé un modelo de regresión lineal en el que la variable price será la dependiente y solamente incluiré las continuas como predictoras, de está manera se puede tener una idea más global de como están afectando los outliers al conjunto de datos desde una perspectiva lineal. 
+
+A través de los siguientes gráficos se puede analizar como afectan los datos atípicos a dicho modelo de regresión. 
+ 
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+model <- lm(price~. , data = continuas)
+
+par(mfrow = c(2,2))
+plot(model)
+```
+
+El primer gráfico nos indica el grado de linealidad entre las variables predictoras y el precio, el grado de homocedasticidad y la presencia de outliers en caso de que hayan observaciones muy dispersas. 
+En este caso podemos apreciar que existe linealidad (en R esto se comprueba viendo como de lejos está la linea roja de la línea de puntos). También existe cierta heterodasticidad ya que los datos no están distribuidos uniformamente entorno al eje x y además hay algunos valores atípicos. 
+
+En cuanto al gráfico qq-plot, se incumple totalmente el supuesto de la normalidad ya que claramente no coinciden los puntos de los datos con la línea del gráfico. Esto nos indica la existencia de una asimetría en la distribución del conjunto de datos que seguramente se pueda explicar con la existencia de tantos outliers. 
+
+El gráfico de "residuals vs Leverage" es el que voy a emplear para realizar la distancia de Cook. El término "Leverage" se refiere al grado en que cambiarían los coeficiente del modelo de regresión si se cambiase una observación en particular del conjunto de datos. El término "standarized results" se refiere a la diferencia entre un valor predicho y la observación real de dicho valor. 
+
+En el gráfico no encontramos ninguna observación por encima de las rayas rojas de los extremos que indican que si un dato supera esa zona tendría una gran influencia en el modelo. Aun así se hay muchos datos dispersos y muchos de ellos tienen un apalancamiento muy grande. 
+
+Una vez tenemos una idea global de como los datos están influyendo al conjunto de datos, calcularé la distancia de cook. Utilizaré el siguiente códgio para calcular la distancia de cook. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+mod <- lm(price ~. , data=cars)
+cooksd <- cooks.distance(mod)
+
+n <- nrow(cars)
+plot(cooksd, main = "Distancia de Cook para datos influyentes en el modelo")
+abline(h = 4/n, lty =  2, col = "yellow")
+
+influential <- cooksd[(cooksd > (4 * mean(cooksd, na.rm = TRUE)))]
+
+names_of_influential <- names(influential)
+
+outliers <- cars[names_of_influential,]
+cook <- cars %>% anti_join(outliers)
+```
+Hay un total de **176** valores influyentes según la distancia de cook. Es decir, cualquiera de esos valores tiene una repercusión muy grande en el modelo. Estos datos representan un 3.77% del modelo porl o que no son lo suficientemente representativos como para imputarlos. Por lo tanto eliminaré todas estas observaciones. En la siguiente tabla se puede ver como ha disminuido el sesgo en la variable price.
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+
+#  -------------------------------------------------------------------------------------------
+price_bp <-ggplot(cars, aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + geom_density(lwd = 1.20,col = "#4292C6")+
+  geom_text(x = 140000, y = 0.000042, label = "Sesgo = 2.12",size = 3.5)+
+  ggtitle("Conjunto con datos influyentes")
+
+price_bp2 <- ggplot(cook, aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())+ geom_density(lwd = 1.20,col = "#4292C6")+
+  geom_text(x = 125000, y = 0.000046, label = "Sesgo = 1.32",size = 3.5)+
+  ggtitle("Conjunto sin datos influyentes")
+
+mileage_bp <- ggplot(cars, aes(x = mileage))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+mileage_bp2 <- ggplot(cook, aes(x = mileage))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())+ geom_density(lwd = 1.20,col = "#4292C6")
+
+mpg_bp <- ggplot(cars, aes(x = mpg))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+mpg_bp2 <- ggplot(cook, aes(x = mpg))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())+ geom_density(lwd = 1.20,col = "#4292C6")
+
+engineSize_bp <- ggplot(cars, aes(x = engineSize))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+engineSize_bp2 <- ggplot(cook, aes(x = engineSize))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + theme(axis.title.y = element_blank(),axis.text.y = element_blank(),axis.ticks.y = element_blank())+ geom_density(lwd = 1.20,col = "#4292C6")
+
+ggarrange(price_bp,price_bp2,mileage_bp,mileage_bp2,mpg_bp,mpg_bp2,engineSize_bp,engineSize_bp2,ncol=2,nrow = 4)
+
+```
+Claramente el sesgo de la variable predictora ha sido reducido sin afectar mucho la naturaleza de las demás variables. Para bajar aun más este coeficiente se podrían eliminar los valores atípicos leves. No obstante esto ya sería eliminar demasiadas observaciones y cambiar la naturaleza del conjunto de datos por lo que lo dejaré de está manera. 
+
+
+
+En cuanto a las variables categóricas, se puede comprobar la existencia de datos atípicos a través de la frecuencia. Es decir, si un grupo tiene una frecuencia muy baja, se podría interpretar como un outlier. Para ello voy a realizar una tabla en la que se incluyan las frecuencias de cada grupo dentro de cada variable discreta. No incluiré la variable **model** en la tabla por su número tan elevado de grupos. Analizaré dicha variable aparte. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(kableExtra)
+library(huxtable)
+
+outliers_categoric <- data.frame("brand" = c("audi : 716", "bmw : 733", "cclass : 126", "focus : 66", "ford : 258", "hyundi : 159", "merc : 719", "skoda : 276", "toyota : 128", "vauxhall : 430"),
+           "transmission" = c("Automatic : 755", "Manual : 1710", "Semi-Auto : 2192","-","-","-","-","-","-","-"),
+           "fuelType" = c("Diesel : 1649", "Hybrid : 192", "Petrol : 2800", "Other : 16","-","-","-","-","-","-"),
+           "tax" = c("135$ : 94", "140$ : 21", "145$ : 3820", "150$ : 707", "260$ : 11","265$ : 4","-","-","-","-"))
+
+kable(outliers_categoric)
+```
+
+Se pueden observar datos atípicos en las columnas de fuelType y tax. En la columna de fuelType el gupo "other" solamente tiene 16 observaciones. Aun así esto es normal ya que hay muy pocos coches que tengan un tipo de transmision diferente a la convencional y que se comercialicen. Por lo tanto es un dato atípico pero común ya que es normal que dentro de la base de datos hayan algunos coches que utilicen un motor eléctrico por ejemplo. 
+
+Por otro lado, en la variable **tax** podemos encontrar varios datos atípicos. En los niveles, 140$, 160$ y 265$. También se trata de datos atípicos pero los considero normales ya que el importe de la tasa a pagar varia dependiendo de las circunstancias. Es menos común que se den estos casos pero cabe la posibilidad. 
+
+
+En cuanto a la variable "model", crearé una tabla con los grupos que tienen menos de 20 observaciones. Estos grupos no tienen un número lo suficientemente grande de observaciones y se consideran como outliers. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+cars_model <- cars %>% 
+  group_by(model) %>% 
+  summarise("n" = n()) %>% 
+  arrange(desc(n)) %>% 
+  filter(n < 20)
+
+kable(head(cars_model),caption = "Grupos con menos de 20 observaciones")
+```
+
+En la siguiente tabla podemos ver los grupos con más observaciones dentro de los grupos que tienen menos de 20 observaciones. En total esta tabla tiene un total de 60 filas por lo que hay 60 grupos que continenen menos de 20 observaciones. Si le quitamos todos estos grupos a la variable seguiríamos teniendo 55 grupos en la variable model que sigue siendo un número muy alto. Además de que tendríamos que eliminar una gran cantidad de datos. Por lo tanto dejaré está variable como está y si más adelante decido incluirlá en el model, modificaré sus valores típicos. 
+
+## Supuesto de independencia
+El supuesto de independencia es muy importante ya que supone que las observaciones dentro de cada muestra son independiente entre si y que las observaciones entre muestras también son independientes entre sí. Es crucial que haya independica entre todas las variables predictoras. 
+
+Es importante que el conjunto de datos cumpla este supuesto cabo para llevar a cabo pruebas estadísticas como un T-test o una regresión lineal en la que se asumen que los residuos del modelo ajustado son independientes. 
+
+La independencia de los datos depende de como se hayan medido y como se haya elaborado el conjunto de datos. Se trata de un conjunto de datos de Kaggle que parece bastante fiable y no parecen haber signos de dependencia dentro del dataset. Para comprobar este supuesto uno de los tests más populares es el de Durbin-Watson. 
+Este test se lleva a cabo con los residuos de una regresión lineal y sigue las siguientes hipótesis: 
+
+H_o : No hay correlación entre los residuos
+H_a : Existe correlación entre los residuos
+
+Por ahora asumiré que las predictoras son independientes y una vez haya construido el modelo comprobaré este supuesto ya que realmente cobra importancia a la hora de realizar una regresión lineal. 
+
+## Supuestos de normalidad
+
+Una vez se ha trabajado con los datos nulos y los atípicos es momento de comprobar la normalidad de las variables. Por los cálculos que he realizado previamente, se predice que en general los datos no van a seguir una distribución normal debido a su alto nivel de asimetría y curtosis.
+
+Para comprobar que los datos siguen una distribución normal utilizaré el gráfico qq-plot y el test de shapiro. 
+
+Cabe recalcar que al tratarse de un conjunto de datos con un número de observaciones relativamente alto se puede emplear el teorema central del limite para asumir que el conjunto de datos sigue una distribución normal. Aun así la distribución podría estar sesgada por lo que no podemos basarnos en este teorema directamente. 
+
+Primero le eccharé un vistazo a la variable dependiente. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+#Gráfico QQ-plot
+qqnorm(cook$price)
+qqline(cook$price) 
+
+# ------------------------------------------------------------------------------------------------------
+#Shapiro Test
+shapiro.test(cook$price)
+```
+Tanto el gráfico qq-plot como el test de shapiro indican que la variable **price** no sigue una distribución normal. Como he comentado antes esto se debe a que a pesar de que la muestra tiene un gran número de observaciones, también presenta un gran número de outliers por lo que está sesgada. En el siguiente gráfico se puede apreciar la gran influencia de la valores atípicos en la normalidad de la variable. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+Q <- quantile(cars$price, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(cars$price)
+
+eliminated_out <- subset(cars, cars$price > (Q[1] - 1.5*iqr) & cars$price < (Q[2]+1.5*iqr))
+eliminated_extreme <- subset(cars, continuas$price > (Q[1] - 3*iqr) & cars$price < (Q[2]+3*iqr))
+
+#--------------------------------------------------------------------------------------------------------
+
+price_hist <-ggplot(cars, aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + geom_density(lwd = 1.20,col = "#4292C6")+
+  geom_text(x =130000, y = 0.000045, label = "Sesgo = 2.12 \n Curtosis = 14.13", size = 3.5)+
+  ggtitle("Conjunto con outliers")
+
+eliminated_extreme_hist <-ggplot(eliminated_extreme, aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + geom_density(lwd = 1.20,col = "#4292C6")+ 
+  geom_text(x =63000, y = 0.000050, label = "Sesgo = 1.07\n Curtosis = 4.43 ", size = 3.5)+
+  ggtitle("Conjunto sin outliers extremos")
+
+eliminated_out_hist <-ggplot(eliminated_out, aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + geom_density(lwd = 1.20,col = "#4292C6")+ 
+  geom_text(x =46000, y = 0.000065, label = "Sesgo = 0.53\n Curtosis = 2.89", size = 3.5)+
+  ggtitle("Conjunto sin ningún outlier")
+
+eliminated_cook_out <-ggplot(cook,aes(x = price))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4) + geom_density(lwd = 1.20,col = "#4292C6")+ 
+  geom_text(x =115000, y = 0.0000475, label = "Sesgo = 1.32\n Curtosis = 7.16", size = 3.5)+
+  ggtitle("Conjunto sin influyentes (cook)")
+  
+ggarrange(price_hist, eliminated_extreme_hist, eliminated_out_hist,eliminated_cook_out, ncol = 2, nrow = 2)
+```
+Naturalmente el conjunto de datos que menor sesgo tiene y más se acerca a una distribución normal es el conjunto que no contine ningún outlier. Presenta un sesgo muy bajo y una curtosis muy similar a la de una distribución normal (3). Por otro lado es normal que el conjunto de datos sin valores extremos presente un sesgo y curtosis menor que el del método de cook ya que hemos eliminado valores que se alejaban de la media. 
+
+## Normalidad de las contínuas
+
+A continuación analizaré la normalidad de las variables predictoras continuas
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+mileage_bp <- ggplot(cook, aes(x = mileage))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+mpg_bp <- ggplot(cook, aes(x = mpg))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+engineSize_bp <- ggplot(cook, aes(x = engineSize))+geom_histogram(aes(y = ..density..),bindwith = 0.1, col = "black", fill = "green", bins = 100, alpha = 0.4)+ geom_density(lwd = 1.20,col = "#4292C6")
+
+ggarrange(mileage_bp, engineSize_bp,mpg_bp,nrow = 2, ncol = 2)
+```
+Sólamente viendo el gráfico ya se ve que las variables **mileage** y **engineSize** no siguen una distribución normal. La variable **mpg** se ajusta a más a una distribución gaussiana pero se puede apreciar que tiene una asimetría positiva ya que tiene más valores diferentes a la derecha de la media que a su izquierda. Corroboraré está hipotesis con el gráfico qq-plot y las medidas de sesgo y curtosis de cada una de las variables. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+# Gráfico QQ-plot ----------------------------------------------------------------------------------------
+par(mfrow = c(2,2))
+
+qqnorm(cook$mileage)
+qqline(cook$mpg)
+
+qqnorm(cook$mpg)
+qqline(cook$mpg)
+
+qqnorm(cook$engineSize)
+qqline(cook$engineSize)
+
+kable(data.frame("Medidas"= c("test_shapiro", "Sesgo","Curtosis"),
+           "mileage"    = c("-2.2e^e-16", "2.25", "16.64"),
+           "mpg"        = c("2.2e-16", "5.61","53.34"),
+           "engineSize" = c("2.2e-16", "0.89", "4.84" )),caption = "Supuesto de normalidad")
+
+```
+Efectivamente niguna de las variables contínuas sigue una distribución normal.
+
+## Normalidad en variables categóricas
+
+En cuanto a las variables categóricas, comprobaré su normalidad en función del precio. Es decir dentro de cada grupo comprobaré los valores que tiene de la variable dependiente. No incluiré la variable **model** en este análisis y asumiré que no sigue una distribución normal debido a que contiene un gran número de grupos con observaciones por debajo de 30. Aun así, si finalmente decido incluir dicha variable en el modelo haré un análisis más detallado de su normalidad. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+ggqqplot(cars, "price", facet.by = "brand", main = "Normalidad en la variable brand")
+
+var1 <- cook %>%
+  group_by(brand)%>%
+  shapiro_test(price)
+
+kable(var1, caption = "Shapiro test en variable brand")
+
+ggqqplot(cook, "price", facet.by = "transmission", main = "Normalidad en la variable transmission")
+
+var2 <- cook %>%
+  group_by(transmission)%>%
+  shapiro_test(price)
+
+kable(var2, caption = "Shapiro test en variable transmission")
+
+ggqqplot(cook, "price", facet.by = "fuelType", main = "Normalidad en la variable fuelType")
+
+var3 <- cook %>%
+  group_by(fuelType)%>%
+  shapiro_test(price)
+
+kable(var3, caption = "Shapiro test en variable fuelType")
+
+ggqqplot(cook, "price", facet.by = "tax", main = "Normalidad en la variable tax")
+
+var4 <- cook %>%
+  group_by(tax)%>%
+  shapiro_test(price)
+
+kable(var4, caption = "Shapiro test en variable tax")
+```
+En general no existe ninguna variable que siga una distribución normal por lo que asumiré que el conjunto de datos no está normalizado (muchas valores-p aparecen con un valor de 0 porque tienen un valor tan pequeño que R no puede detectar).
+
+## Supuesto de homogeneidad
+
+Otro supuesto importante que tienen que cumplir es el de homogeneidad. La homogeneidad evalua como cambia la variabilidad de los valores a lo largo de un conjunto de datos. Es importante que no haya mucha variabilidad para poder realizar contrastes y análisis estadísticos fiables. 
+
+Nuevamente los datos atípicos juegan una mala pasada a la hora de evaluar este supuesto ya que si el conjunto de datos presenta muy valores muy dispersos es díficil que la variabilidad de los datos se mantenga constante en el conjunto de datos. Aun así nuevamente haré una prueba para tener una evidencia estadística. 
+
+En este caso como ya se ha comprobado previamente a través de gráficos en repetidas veces que ninguna variable presenta una prueba sólida de homogeneidad. Simplemente realizaré el test de levene en las variables categóricas. Un test que sirve para comprobar la homogeneidad de las variables y es poco sensible a distribuciones no normalizadas. 
+
+En el test levene la hipotesis nula es que las varianzas poblaciones son iguales y la alternativa que son diferentes. Utilizaré un p-valor con un nivel de significación del 5%. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+kable(data.frame(Variables = c("brand", "transmission", "fuelType", "tax"), Levene_test = c(2.2e-16,2.2e-16,3.517e-06,0.003671)),caption = "Levene test")
+```
+
+Si analizamos el modelo de una forma más global a través de un modelo de regresión también se puede apreciar cierta falta de homocedasticidad ya que los residuos no se distribuyen uniformemente a lo largo del eje x. Por lo tanto asumiré que el conjunto de datos tampoco cumple el supuesto de homocedasticidad. Una vez haya constriuido el modelo volveré a comprobar este supuesto. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+plot(mod,1)
+```
+## Escalación y dumnificación de los datos
+
+Una vez he comprobado los supuestos de independencia, normalidad y homogeneidad el conjunto de datos está preparado para empezar con el análisis estadístico y encontrar las variables significativas. Para ello el último paso que queda es normalizar las variables continuas y convertir en dummies las categóricas. Lo haré con la librería fast_dummies de la siguiente manera: 
+
+```{r  echo=FALSE, comment = NA, message = FALSE, paged.print = TRUE, warning=FALSE}
+library(fastDummies)
+
+set.seed(1234567)
+scaled_var <- scale(select(cook, is.numeric),  center = TRUE, scale = TRUE)
+
+cook_dummies <-cook %>% 
+  dummy_cols() %>%  
+  select(-c("brand","model","transmission","fuelType","tax"))
+
+dum_cook <- cbind(scaled_var,cook_dummies)
+
+```
+
+## Correlación de las variables contínuas con la variable dependiente. 
+
+
+Para analizar la correlación entre la variable dependiente y cada una de las predictoras se deben seguir varios métodos. En primer lugar analizaré las contínuas ya que los métodos que emplearé con estas son diferentes a los métodos de las categóricas. 
+
+Uno de los parámetros más populares es el coeficiente de correlación de Pearson que mide la relación lineal entre dos variables cuantitativas. Aun así en este caso puede que no sea la mejor forma de analizar los datos. 
+Como he visto anteriormente los datos con los que estoy trabajando no están normalizados, no cumplen el supuesto de homogeneidad y contienen un porcentaje relativamente alto de "valores atípicos leves". 
+Precisamente el coeficiente de correlación de Pearson es poco robusto con variables que no siguen una distribución normal, a los datos atípicos y a variables que tengan un sesgo alto. Por otro lado también se asume que trabajan mejor con valores homogéneos. 
+
+Utilizaré una medida no paramétrica, emplearé la correlación de Spearman. Con el coeficiente de Spearman podemos calcular si una variable es monotónica. Es decir que la variable "X" aumenta con la variable "Y". No tiene porque ser una relación lineal pero si que nos muestra claramente la existencia de una relación. En caso de que exista dicha relación, comprobaré más tarde si ésta es estrictamente lineal y si tiene sentido incluirla en el modelo de regresión lineal. 
+
+En primer lugar visualizaré la relación a través de un gráfico de puntos.  
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+plot1 <- ggplot(cook, aes(mpg,price)) + geom_point()
+plot2 <- ggplot(cook, aes(mileage,price)) + geom_point()
+plot3 <- ggplot(cook, aes(engineSize,price)) + geom_point()
+
+ggarrange(plot1,plot2,plot3,nrow = 2, ncol = 2)
+```
+
+A primera vista no parece haber una relación estricta en ninguna de las gráficas de **mpg** y **mileage**. Quizás se pueda apreciar una relacion monotónica en la segunda gráfica pero no parece ser de un grado muy alto. 
+
+En la variable de **engineSize** si que parece haber una relación mayor. 
+
+Crearé una tabla con estas variables en las que incluiré el coeficiente de correlación, el coeficiente determinación calculado con los valores de Spearman, el resultado del coeficiente de correlación y el valor del test de correlación con el método de Spearman. 
+
+El test de correlación servirá para evaluar si las correlaciones obtenidas son significativamente distintas de cero. Es decir, que es improbable que se haya obtenido dicho resultado al azar. El test emplea la siguiente hipótesis: 
+
+$$ H_0 : ? = 0$$
+$$ H1 : ?! = 0$$
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+kable(data.frame("Variables" = c("mpg", "mileage", "engineSize"), 
+           "Spearman_correlation" = c(-0.55, 0.24, 0.83),
+           "Pearson_correlation" = c(-0.28, 0.20, 0.83),
+           "R^2" = c(0.30,0.06,0.70),
+           "Cor_test" = c(2.2e-16, 2.2e-16, 2.2e-16)),caption = "Correlación de las variables continuas")
+```
+
+
+Los valores medidos con el método de Pearson no difieren mucho de los valores de Spearman, sobretodo en la variable engineSize. Esto probablemente se deba a que dicha variable presenta una relación monotónica lineal con el precio. En cambio la variable mpg tiene un coeficiente de Pearson muy bajo pero incrementa significativamente con el coeficiente de Spearman. Esto probablemente se deba que dicha variable presenta una relación monotónica no lineal con la variable predictora. Aun así como he explicado antes, los resultados del coeficiente de Pearson no son totalmente fiables.
+
+En cuanto al resultado del test correlación, en las 3 variables es menor que el nivel de significación (0.05). 
+Hay que tener cuidado a la hora de interpretar el p-valor. El valor p es la probabilidad de observar un estadístico muestral que es al menos tan extremo como el estadístico observado dado que la hipotesis nula es verdadera. Este valor solamente indica la probabilidad de que el resultado observado se deba al azar. 
+
+Por lo tanto, que el valor p sea menor que 0.05 indica que es poco probable que los resultados obtenidos en la correlación se deban al azar y que son significativamente diferentes de 0. Gracias a estos valores sabemos que es muy poco probable que los resultado obtenidos no se deban al azar. Aun así esto no nos da la prueba definitiva de que una variable tenga una relación con otra.
+
+Me basaré en los gráficos y en el coeficiente de correlación para decidir que la única variable que tiene una relación con el precio es **engineSize**. La variable **mpg** parece tener algo de relación pero no se aprecia que sea lineal ni que sea una relación directa. 
+
+Para llevar a cabo el análisis de la forma más completa posible analizaré la posible existencia de relaciones no lineales entre cada predictora continua y la independiente. Realizaré este análisis porque el coeficiente de Pearson solamente mide relaciones lineales y el coeficiente de Spearman mide relaciones monotónicas. En cabmio la relación entre la dependiente y cada uno de los predictores podría ser no lineal. Para llevar este análisis a cabo utilizaré el paquete "nlcor" que se ajusta bastante bien a la hora de encontrar relaciones no lineales y nos da una visión bastante exacta en caso de que exista alguna. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(ggpubr)
+library(remotes)
+library(nlcor)
+library(ggpubr)
+
+nl_mileage <- nlcor(cook$mileage,cook$price, chart_title = "price vs mileage")$cor.plot
+nl_mileage <- nlcor(cook$mpg, cook$price, chart_title = "price vs mpg")$cor.plot
+nl_mileage <- nlcor(cook$engineSize, cook$price, chart_title = "price vs engineSize")$cor.plot
+
+kable(data.frame("-" = "Cor_estimate", "mileage" = 0.27, "mpg" = 0.51, "engineSize" = 0.83),caption = "Correlación no lineal")
+```
+
+En las gráficas tampoco podemos observar una relación no lineal muy notable. En este caso ninguna variable tiene una relación negativa ya que en relaciones no lineales no se incluyen valores negativos porque no tienen sentido. En la variable engineSize la relación era muy alto porque esta función detecta cualquier tipo de relación en general por lo que también detecta lineales. En cuanto a las demás variables también ha tenido un resultado parecido al obtenido con la relación de Spearman. Esto quiere decir que la función no ha encontrado más patrones de relación además de los que se pueden explicar con la relación de Spearman. 
+
+Por lo tanto puedo concluir que la variables mileage no presenta suficiente evidencia para demostrar una relación con la variable "price"y no las incluiré en el modelo ya que no considero que vayan a aportar ninguna mejora. En el caso de la variable **mpg** tampoco se aprecia ninguna relación directa. Aun así la incluiré en el modelo ya que podría incluir alguna mejora. Una vez esté dentro del modelo decidiré si aporta alguna mejora o no. 
+
+## Análisis de relación entre las variables categóricas y la variable independiente. 
+
+Para encontrar las variables categóricas relacionadas con la variable independiente seguiré un método parecido al de las variables contínuas. En primer lugar crearé un gráfico para tener una idea más visual dentro de los grupos de cada variable. Por lo general cada variable presenta grupos muy dispersos por lo que hay más probabilidad de econtrar alguna diferencia entre las varianzas de los mismos. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+ggplot_brand <- ggplot(cook,aes(brand,fill=brand))+
+ geom_bar(color = "black") + theme(axis.text.x = element_blank())
+
+ggplot_model <- ggplot(cook,aes(model,fill=model))+
+ geom_bar(color = "black") + theme(legend.position = "none",axis.text.x = element_blank())
+
+ggplot_transmission <- ggplot(cook,aes(transmission,fill=transmission))+
+ geom_bar(color = "black") + theme(axis.text.x = element_blank())
+
+ggplot_fuelType <- ggplot(cook,aes(fuelType,fill=fuelType))+
+ geom_bar(color = "black") + theme(axis.text.x = element_blank())
+
+ggplot_tax <- ggplot(cook,aes(cook$tax,fill=tax))+
+ geom_bar(color = "black") + theme(axis.text.x = element_blank())
+
+ggarrange(ggplot_brand,ggplot_model,ggplot_transmission,ggplot_fuelType,ggplot_tax,ncol=2,nrow = 3)
+```
+Si nos fijamos en la variable model, es imposible representar todas las variables en el mismo gráfico por lo que no incluiré esta variable en el análisis y la analizaré de manera independiente. 
+
+Para hacerme una idea de la relación entre cada variable y la predictora, emplearé un gráfico potente de la librería **ggstatsplot** en el que se representan los diferentes grupos de cada variable en diagramas de caja y bigotes. Además realiza el test "Kruskal-Wallis" relacionando la variable **price** con cada uno de los grupos dentro de la variable. 
+
+El test de Kruskal Wallis es una alternativa paramétrica al test **ANOVA** para datos que no cumplen el supuesto de normalidad y homocedasticidad. A diferencia de ANOVA, este test compara las medianas. Lleva a cabo la siguiente hipótesis: 
+
+H_0 : Todas las muestras provienen de la misma población (distribución)
+H_A : Al menos una muestra proviene de una población con una distribución distinta
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(ggstatsplot)
+
+ggbetweenstats(data = cook, x = brand, y = price, type = "nonparametric", title = "Distribución del precio en brand")
+
+ggbetweenstats(data = cook, x = transmission, y = price, type = "nonparametric", title = "Distribución del precio en brand")
+
+ggbetweenstats(data = cook, x = fuelType, y = price, type = "nonparametric", title = "Distribución del precio en brand")
+
+ggbetweenstats(data = cook, x = tax, y = price, type = "nonparametric", title = "Distribución del precio en brand")
+
+```
+(No he encontrado la forma de quitarle las etiquetas en el primer gráfico)
+
+En todos los gráficos tenemos un p-valor < 0.05. Lo que nos indica que en todas las variables hay una diferencia significativa en las medianas de al menos dos grupos.
+
+Aun así esto no es evidencia suficiente como para asumir que existe una relación entre cada una de las variables categóricas y la dependiente. 
+
+Para poder ver si se cumple una relación de una forma más visual, ordenaré los grupos dentro de cada variable de menor a mayor en función de sus medias con respecto al precio. De está manera se verá si realmente incrementa la variable. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+p1 <- ggboxplot(x = "brand", y = "price", xlab = NULL, data = cook)
+p2 <- ggboxplot(x = "fuelType", y = "price", data = cook)
+p3 <- ggboxplot(x = "transmission", y = "price", data = cook)
+p4 <- ggboxplot(x = "tax", y = "price", data = cook)
+
+ggarrange(p1,p2,p3,p4,nrow = 2, ncol = 2)
+```
+
+En ningún gráfico se aprecia una relación realmente significativa por lo que expecto en el de "brand". En el de "transmission" se puede apreciar como la mediana de los diferentes grupos varía, pero solamente con la de manual. La de automatic y semi-auto es muy similar. En el tipo de combustible si que se puede predecir una tendencia lineal aunque muy pequeña. Y el de tax está bastante claro que no tiene ningún tipo de relación. Por lo tanto me quedaré con las variable **brand** y la variable **fuelType** que son las más significativas para el modelo. 
+
+Le echaré un vistazo para ver la relación que tiene con el precio y si de alguna manera puedo añadirla en el modelo en caso de que sea representativa. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+cars_brand <- cars %>% 
+  group_by(brand)
+
+audi <- cars_brand%>%
+  filter(brand == "audi") %>% 
+  arrange(price)
+
+bmw <- cars_brand%>%
+  filter(brand == "bmw")%>% 
+  arrange(price)
+
+cclass <- cars_brand%>%
+  filter(brand == "cclass")%>% 
+  arrange(price)
+
+focus <- cars_brand%>%
+  filter(brand == "focus")%>% 
+  arrange(price)
+
+ford <- cars_brand%>%
+  filter(brand == "ford")%>% 
+  arrange(price)
+
+hyundi <- cars_brand%>%
+  filter(brand == "hyundi")%>% 
+  arrange(price)
+
+merc <- cars_brand%>%
+  filter(brand == "merc")%>% 
+  arrange(price)
+
+skoda <- cars_brand%>%
+  filter(brand == "skoda")%>% 
+  arrange(price)
+
+toyota <- cars_brand%>%
+  filter(brand == "audi")%>% 
+  arrange(price)
+
+vauxhall <- cars_brand%>%
+  filter(brand == "toyota")%>% 
+  arrange(price)
+
+vw <- cars_brand%>%
+  filter(brand == "vw")%>% 
+  arrange(price)
+
+# -------------------------------------------------------------------------------------------------------
+
+p1 <- ggboxplot(audi, x = "model", y = "price",xlab = "audi")
+
+p2 <- ggboxplot(cclass, x = "model", y = "price",xlab = "cclass")
+
+p3 <- ggboxplot(focus, x = "model", y = "price",xlab = "focus")
+
+p4 <- ggboxplot(ford, x = "model", y = "price",xlab = "ford")
+
+p5 <- ggboxplot(hyundi, x = "model", y = "price",xlab = "hyundi")
+
+p6 <- ggboxplot(merc, x = "model", y = "price",xlab = "merc")
+
+p7 <- ggboxplot(skoda, x = "model", y = "price",xlab = "skoda")
+
+p8 <- ggboxplot(toyota, x = "model", y = "price",xlab = "toyota")
+
+p9 <- ggboxplot(vauxhall, x = "model", y = "price",xlab = "vauxhall")
+
+p10 <- ggboxplot(vw, x = "model", y = "price",xlab = "vw")
+
+ggarrange(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10, nrow = 4,ncol = 3)
+
+```
+He dividido la variable **price** dentro de los grupos de **brand** para poder tener una idea de como se distribuyen los grupos por precio. Efectivamente esta variable es la que más información aporta al modelo. Tiene mucha lógica ya que a la hora de valorar el dinero de un coche en lo primero en lo que se fija uno es en el modelo. Claramente esta es la variable más importante de todas y desde el punto de vista práctico, si no sabemos con que modelo de coche estamos tratando no vamos a poder predecir el precio de manera correcta. 
+Aun así si analizamos la cuestión desde un punto de vista estadístico, incluir está variable en el modelo va a suponer muchas travas ya que tiene una gran cantidad de grupos y va a ser muy complicado trabajar con todas ellas. Por otro lado está variable tiene un número de grupos muy elevado con un número de observaciones muy bajo que ni siquieran superan las 10 observaciones. Trabajar con este tipo de datos es muy complicado ya que no cumplen ningun supuesto y tampoco es una muestra lo suficientemente grande como para ser representativa. Por ello escogeré la variable brand en vez de model ya que también se ajusta bien al modelo y es mucho más fácil para trabajar con ella. 
+
+Por lo tanto escogeré las variables **enigneSize**,**mpg**,**brand** y **fuelType** como variables significativas y con las que entrenaré el modelo.  -
+
+## Imputación de valores nulos mediante k-vecinos
+
+El último paso antes de entrenar el modelo es volver a incluir los valores nulos en la variable **mpg** e imputarlos mediante el método de k-vecinos. De está manera se mejorará las predicciones del modelo (los nulos de la variable tax no se incluirán porque se ha eliminado dicha variable).
+
+Para llevar a cabo el k-vecinos emplearé una k de 68 (Valor cercano a la raiz cuadrada del número de observaciones). Emplearé la librería "caret" para llevar a cabo el algoritmo. Para llevar esto a cabo, volveré a crear un dataframe con todos los datos de "used_cars_2020.csv" y eliminaré los valores atípicos detectados con el metodo de cook. Una vez hecho esto sustituiré los outliers. También volveré a normalizar la variable **price**, **engineSize**, **mpg** y dummnificar las variables **brand** y **transmission**. (Seguramente haya una forma mejor de sustituir los valores nulos pero no se me ocurre). 
+
+```{r  echo=TRUE, comment = NA, message = FALSE, paged.print = TRUE, warning=FALSE}
+cars2 <- read.csv("used_cars2020.csv") 
+cars2$brand <- as.factor(cars2$brand)
+cars2$model <- as.factor(cars2$model)
+cars2$transmission <- as.factor(cars2$transmission) 
+cars2$fuelType <- as.factor(cars2$fuelType)
+cars2$tax <- as.factor(cars2$tax)
+
+cars2<- cars2 %>% anti_join(outliers)
+
+preProcValues <- preProcess(cars2%>%
+                              select(price,mileage,mpg,engineSize,brand,model
+                                     ,transmission,fuelType,tax),
+                              method = c("knnImpute"),
+                              k = 20,
+                              knnSummary = mean)
+
+impute_cars_info <- predict(preProcValues, cars2,na.action = na.pass)
+
+procNames <- data.frame(col = names(preProcValues$mean), mean = preProcValues$mean, 
+                        sd = preProcValues$std)
+
+for(i in procNames$col){
+ impute_cars_info[i] <- impute_cars_info[i]*preProcValues$std[i]+preProcValues$mean[i] 
+}
+
+cars_df  <- impute_cars_info %>% 
+  select(price,engineSize,mpg,brand,transmission,fuelType)
+
+#Creación de variables dummies. 
+
+set.seed(1234567)
+cars_df_c <- scale(select(cars_df, is.numeric),  center = TRUE, scale = TRUE)
+
+cars_df_c <- data.frame(cars_df_c)
+cars_df$brand <- as.factor(cars_df$brand)
+cars_df$fuelType <- as.factor(cars_df$fuelType)
+
+cars_df_d <-cars_df %>% 
+  select(c(brand,fuelType)) %>% 
+  dummy_cols()
+
+dum_cook <- cbind(cars_df_c,cars_df_d)
+```
+
+Una vez hecho esto ya tenemos las variables preparadas para empezar a entrenar el modelo. 
