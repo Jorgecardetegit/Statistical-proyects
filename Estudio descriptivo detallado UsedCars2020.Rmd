@@ -1,5 +1,5 @@
 ---
-title: "Trabajo Minería 1"
+title: "Estudio descriptivo de la venta de coches de segunda mano en Reino Unido en el 2020"
 author: "Jorge Cardete Llamas"
 date: "10/11/2022"
 output:
