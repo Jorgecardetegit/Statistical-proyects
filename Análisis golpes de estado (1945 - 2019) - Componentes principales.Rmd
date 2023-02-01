@@ -1,0 +1,240 @@
+---
+title: "Análisis de los golpes de Estado"
+author: "Jorge Cardete Llamas"
+date: "22/11/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+**Estudio y análisis descriptivo del conjunto de datos.**
+
+El conjunto de datos que se va a analizar pertenece al proyecto **Coup D`etat Proyect (CDP)*. Dicho proyecto identifica glopes de estado que se han llevado a cabo, que se han intentado y que se han conspirado en 136 paises entre los años 1945 y 2019. También contiene una descripción exhaustiva de las características en las que se han llevado a cabo estos golpes de estado. Principalmente identifica el tipo de golpe de estado y el destino del ejecutivo depuesto. 
+
+Por lo tanto el conjunto de datos se divide en 4 grupos:
+
+Un grupo de variables categóricas que nos describe las condiciones en la que se llevo a cabo el golpe: "coup_id", "cowcode", "country", "year", "month", "day" y "event_type". "event_type" esta dumnificada a través de las variables "conspiracy" y "attempt" que también se incluyen en el conjunto de datos. 
+
+**cowcode** representa un número de identificación que se diseñó en el proyecto "Correlates of War (COW)" donde se le asignó un número a cada país donde ocurrió el golpe de estado. 
+
+**coup_id** es un número de 8 dígitos que consiste en el código de "cowcode" y la fecha en la que se llevo a cabo cada golpe. 
+
+Un grupo de variables dummies que nos indica si el golpe fue exitoso o no: "unrealized" y "realized". 
+
+Un grupo de variables dummies que nos indica el tipo de golpe que se llevó a cabo: "military", "disident", "rebel", "palace", "foreign", "auto", "resign", "popular", "counter" y "other". 
+
+Un grupo de variables que nos indica el destino del ejecutivo depuesto: "noharm", "injured", "killed", "harrest", "jailed", "tried", "fled" y "exile". 
+
+Se puede encontrar más información acerca de estas variables y el conjunto de datos en general en el siguiente enlace: https://databank.illinois.edu/datasets/IDB-9651987
+
+
+### Análisis descriptivo del conjunto de datos
+
+Para analizar el conjunto de datos en primer lugar le echaré un vistazo a sus características principales. Empezaré por analizar cuales son las varaibles que componen el conjunto de datos. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+df <- read.csv("Coup_Data_v2.0.0-1.csv",row.names = NULL)
+
+names(df)
+```
+A pesar de que ya tenemos una idea de las variables que hay dentro del conjunto de daots, podemos volver a visualizarlas y hacernos una idea de la magniutd de variables con las que estamos trabajando. 
+
+Hay un total de 29 variables. Veamos la naturaleza de cada una: 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+str(df)
+```
+La gran mayoría de las variables son númericas, solamente 3 de ellas no lo son: "coup_id", "country" y "event_type". Para llevar a cabo el análisis de los componentes principales es necesario convertir todas las variables categóricas en dummies por lo tanto eliminaré la variable "country". La variable "cowcode" es entera pero realmente se trata de una variable categórica ya que es un identificador no un dato cuantitativo. Por lo tanto también eliminaré esta variable. También eliminaré las variables "year", "month" y "day" que son númericas pero categóricas. Tanto la variable "cowcode" como "year", "month" y "day" vienen recogidas en el "coup_id" por lo que no sigo teniendo esa información. 
+
+Finalmente la variable "event_type" también la eliminaré. Se podría dummnificar dicha variable pero realmente ya está dumnificada en el conjunto de datos a través de las columnas binarias "conspirancy" y "attempt" por lo que la información de "event_type" es redundante. 
+
+En cuanto a la columna "coup_id" la pondré como índice del dataframe. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(tidyr)
+library(corrr)
+library(dplyr)
+library(factoextra)
+library(cluster)
+library(dendextend)
+
+mat <- as.matrix(df[,2:29]) 
+row.names(mat) <- df$coup_id
+df <- as.data.frame(mat)
+row.names(df) <- df$coup_id
+
+df <- df %>% 
+  select(-c(cowcode,country,year,month,day,event_type))
+
+df <- df %>%
+  mutate_if(is.character,as.numeric)
+```
+Para tener una idea más global del conjunto de datos crearé un resumen con la frecuencia con la que aparece cada grupo dentro de cada variable y la media de cada una. Al ser variables binarias solo tienen el valor de 0 y 1 "verdadero" o "falso". Con la media que estará entre 0 y 1 nos podemos hacer una idea de que valor tiene más influencia en el conjunto. Al haber sólo dos valores en cada una de las variables no calcularé la desviación típica. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+res <- data.frame(sapply(df,function(x){table(x)}))
+res[nrow(res) + 1,] <- sapply(df,function(x){round(mean(x),2)})
+rownames(res) <- c(0,1,"Mean")
+res
+```
+
+Para realizar el análisis de componentes principales debemos comprobar una serie de supuestos para llevar a cabo el estudio de la forma más óptima posible. En primer lugar es importante que el conjunto de datos no tenga datos nulos porque estos pueden tener una gran influencia en el cálculo de las componentes. Por otro lado también se debe detectar la existencia de outliers ya que las componentes principales son muy sensibles a los datos atípicos. 
+
+### Detección de datos nulos
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+sum(is.na(df))
+```
+El conjunto de datos no contiene datos nulos por lo que no es necesario modificar nada con respecto a este supuesto. 
+
+### Detección de outliers
+
+Todas las variables dentro del conjunto de datos son binarias. Existen algunas variables como "other" que tienen grupos con muy pocas observacines. Aun así al ser variables binarias no eliminaré ni imputaré ningun dato atípico. 
+
+### Correlación de las variables
+
+Para tener una idea del grado de correlación de las variables, crearé una matriz de correlación y la graficaré para tener una idea más visual. Emplearé el método de Pearson. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+library(corrgram)
+
+cor_tds <- cor(df, method = "pearson")
+
+cor_tds <- data.frame(cor_tds)
+
+corrgram(cor_tds, lower.panel = panel.cor, upper.panel = panel.pie, cor.method = "pearson")
+
+```
+En la gráfica podemos hacernos una idea de la correlación que existe entre las diferntes variables. 
+
+
+**Componentes principales (75% de la varianza acumulada explicativa).**
+
+Para calcular las componentes utilizaré la función **prcomp**. No escalaré las variables porque son dummies y por lo tanto no tiene sentido restarles la media dado que ésta no nos dice nada. Crearé un resumen de la función **prcomp** para analizar la desviación estandar, la poporción de la varianza y la proporción acumulada. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+pr_df <- prcomp(df, scale = F)
+spca <- summary(pr_df)
+spca
+``` 
+Podemos observar como la componente con la mayor desviación estandar es la primera y esta desviación va disminuyendo proporcionalmente a como están ordendas las componentes principales. En la proporción de lla varianza podemos hacernos una idea de cuanto porcentaje de la varianza total hay en cada componente. 
+
+Para tener una idea más visual plasmaré la varianza explicada y la varianza explicada acumulada en un gráfico.  
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+pr_var <- pr_df$sdev^2
+
+pve <- pr_var/sum(pr_var)
+
+par(mfrow = c(1,2))
+plot(pve,
+     xlab = "Componentes principales",
+     ylab = "Proporcion de varianza explicada",
+     ylim = c(0,1), type = "b") 
+
+plot(cumsum(pve),
+     xlab = "Compoonentes principales",
+     ylab = "ProporciÃ³n acumulada de varianza explicada",
+     ylim = c(0, 1), type = "b")
+```
+Las 5 primeras componentes explican un 71.64% de la proproción de la varianza explicada por lo que me quedaré sólamente con estas 5. 
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+pca_df <- data.frame(pr_df$x)
+
+pca_df <- pca_df%>%
+  select(-PC6:-PC22)
+```
+ 
+**Cluster jerárquico (3 formas de agrupación diferentes)**
+
+Para realizar el clustering jerarquico utilizaré los metodos: "Single", "Complete" y "Average". 
+
+ - El método **Single"** consiste en unir el cluster basandose en la menor distancia posible entre los puntos entre dos cluster. 
+ - El método **Complete** consiste en un unir el cluster basándsose en la mayor distancia posible entre los puntos entre dos           clusters.
+ - El método **AVerage** consiste en unir el cluster basandose en la media de cada punto en el cluster con respecto a todos los        demás puntos dentro del cluster. 
+ 
+Crearé un vector con el nombre de estos métodos. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+m <- c("average", "single", "complete")
+names(m) <- c("average", "single", "complete")
+```
+
+Una vez he definido los métodos con los que voy a realizar el cluster, calcularé el coeficiente de aglomeración. Dicho coeficiente, como su nombre indica, es el grado de agrupación que hay entre los datos de un determinado grupo. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+ac <- function(x){
+  agnes(pca_df, method = x)$ac
+}
+
+sapply(m, ac)
+```
+No hay mucha diferencia entre cada método, todos tienen un coeficiente de aglomeración muy alto. 
+A continuación realizaré un análisis más detallado con cada uno de los grupos para decidir la cantidad óptima de clusters. Emplearé los métodos de Elbow, Silhouette y Gap. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+p1 <- fviz_nbclust(pca_df, FUN = hcut, method = "wss",
+                   k.max= 15)+
+  ggtitle("Metodo Elbow")
+
+p2 <- fviz_nbclust(pca_df, FUN = hcut, method = "silhouette",
+                   k.max= 15)+
+  ggtitle("Metodo silhouette")
+
+p3 <- fviz_nbclust(pca_df, FUN = hcut, method = "gap_stat",
+                   k.max= 15)+
+  ggtitle("Metodo Gap")
+
+gridExtra::grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+El punto decisivo parece estar en el 4 por lo tanto escogeré 4 clusters para llevar a cabo el análisis. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+final_clust <- hclust(dist(pca_df), method = "complete")
+
+complete_method <- cutree(final_clust, k=4)
+
+fviz_cluster(list(data = pca_df, cluster = complete_method))+
+  ggtitle("Cluster con metodo complete")
+```
+Éste es el cluster que obtendríamos con el método "complete". Ahora probaré con los otros dos métodos. 
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+final_clust <- hclust(dist(pca_df), method = "average")
+
+average_method <- cutree(final_clust, k=4)
+
+fviz_cluster(list(data = pca_df, cluster = average_method))+
+  ggtitle("Cluster con metodo average")
+```
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+final_clust <- hclust(dist(pca_df), method = "single")
+
+single_method <- cutree(final_clust, k=4)
+
+fviz_cluster(list(data = pca_df, cluster = single_method))+
+  ggtitle("Cluster con metodo single")
+```
+
+Existen ciertas diferencias entre los métodos empleados para llevar a cabo el cluster. En el método "complete" los clusters parecen tener un tamaño parecido, al igual que pasa en el método "average". Los grupos más grandes son los 3 primeros cluster y el cuarto es un poco más pequeño.
+Aun así en el método "single" los grupos 1 y 2 son mucho más grandes y los grupos 3 y 4 son muy pequeños. Para verificar esto creaé unas tablas en las que se verán reflejados el número de datos dentro de cada grupo. 
+
+
+```{r  echo=FALSE, comment = NA, paged.print = TRUE,message=FALSE, warning=FALSE}
+table(complete_method)
+table(average_method) 
+table(single_method)
+```
+Por lo general el cluster con el mayor número de datos es el dos. Después el 1 y después los clusters 3 y 4 son los que presentan un menor núemro de observaciones. 
+
+
+
+
+
+ 
+ 
+
+
